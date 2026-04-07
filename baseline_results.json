@@ -1,0 +1,47 @@
+{
+  "agent": "heuristic",
+  "model": null,
+  "seed": 42,
+  "average_score": 0.38027288535300624,
+  "results": {
+    "easy": {
+      "task": "easy",
+      "agent": "heuristic",
+      "score": 0.5475595283807669,
+      "survival_score": 0.46259921396794496,
+      "efficiency_score": 0.8,
+      "triage_accuracy": 1.0,
+      "penalty": 0.0,
+      "completed_calls": 4,
+      "timed_out_calls": 1,
+      "total_calls": 5,
+      "details": "survival=0.463  efficiency=0.800  triage=1.000  penalty=-0.000  => total=0.548"
+    },
+    "medium": {
+      "task": "medium",
+      "agent": "heuristic",
+      "score": 0.374951900774605,
+      "survival_score": 0.37658650129100835,
+      "efficiency_score": 0.6,
+      "triage_accuracy": 0.5,
+      "penalty": 0.16,
+      "completed_calls": 9,
+      "timed_out_calls": 6,
+      "total_calls": 15,
+      "details": "survival=0.377  efficiency=0.600  triage=0.500  penalty=-0.160  => total=0.375"
+    },
+    "hard": {
+      "task": "hard",
+      "agent": "heuristic",
+      "score": 0.21830722690364684,
+      "survival_score": 0.21384537817274477,
+      "efficiency_score": 0.43333333333333335,
+      "triage_accuracy": 0.5,
+      "penalty": 0.5,
+      "completed_calls": 13,
+      "timed_out_calls": 17,
+      "total_calls": 30,
+      "details": "survival=0.214  efficiency=0.433  triage=0.500  penalty=-0.500  => total=0.218"
+    }
+  }
+}
