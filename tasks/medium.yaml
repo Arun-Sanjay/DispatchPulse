@@ -1,0 +1,96 @@
+name: medium
+description: >
+  Urban scenario. 15 calls in 45 minutes, 6 units, 2 hospitals. Includes a mass
+  casualty bus accident at minute 12 and 20% caller inaccuracy. Reasonable play
+  scores ~0.55-0.70.
+
+grid_size: 12.0
+caller_inaccuracy: 0.20
+
+world_config:
+  grid_size_km: 12.0
+  time_limit_minutes: 45
+  step_duration_minutes: 1
+  call_timeout_minutes: 25
+  max_wait_step_minutes: 5
+
+units:
+  - unit_id: "ALS-1"
+    unit_type: "als_ambulance"
+    position: {x: 4.0, y: 8.0}
+    base_position: {x: 4.0, y: 8.0}
+    status: "available"
+    speed_kmh: 50.0
+    capabilities: ["cardiac_arrest", "trauma", "stroke", "breathing_difficulty", "minor_injury"]
+  - unit_id: "ALS-2"
+    unit_type: "als_ambulance"
+    position: {x: 9.0, y: 4.0}
+    base_position: {x: 9.0, y: 4.0}
+    status: "available"
+    speed_kmh: 50.0
+    capabilities: ["cardiac_arrest", "trauma", "stroke", "breathing_difficulty", "minor_injury"]
+  - unit_id: "BLS-1"
+    unit_type: "bls_ambulance"
+    position: {x: 6.0, y: 6.0}
+    base_position: {x: 6.0, y: 6.0}
+    status: "available"
+    speed_kmh: 45.0
+    capabilities: ["trauma", "breathing_difficulty", "minor_injury"]
+  - unit_id: "BLS-2"
+    unit_type: "bls_ambulance"
+    position: {x: 2.0, y: 3.0}
+    base_position: {x: 2.0, y: 3.0}
+    status: "available"
+    speed_kmh: 45.0
+    capabilities: ["trauma", "breathing_difficulty", "minor_injury"]
+  - unit_id: "FIRE-1"
+    unit_type: "fire_engine"
+    position: {x: 7.0, y: 9.0}
+    base_position: {x: 7.0, y: 9.0}
+    status: "available"
+    speed_kmh: 45.0
+    capabilities: ["fire"]
+  - unit_id: "POL-1"
+    unit_type: "police"
+    position: {x: 3.0, y: 1.0}
+    base_position: {x: 3.0, y: 1.0}
+    status: "available"
+    speed_kmh: 55.0
+    capabilities: ["mental_health_crisis"]
+
+hospitals:
+  - hospital_id: "H1"
+    name: "City General"
+    position: {x: 5.0, y: 5.0}
+    capacity: 35
+    available_beds: 15
+    has_trauma_center: true
+    has_cardiac_unit: true
+    has_stroke_unit: true
+    on_diversion: false
+  - hospital_id: "H2"
+    name: "St Marys"
+    position: {x: 10.0, y: 2.0}
+    capacity: 20
+    available_beds: 8
+    has_trauma_center: false
+    has_cardiac_unit: true
+    has_stroke_unit: false
+    on_diversion: false
+
+calls:
+  - {arrival_minute: 1,  type: "minor_injury",          severity: 4}
+  - {arrival_minute: 2,  type: "breathing_difficulty",  severity: 3}
+  - {arrival_minute: 5,  type: "trauma",                severity: 2}
+  - {arrival_minute: 7,  type: "cardiac_arrest",        severity: 1}
+  - {arrival_minute: 8,  type: "minor_injury",          severity: 4}
+  - {arrival_minute: 12, type: "trauma",                severity: 1}
+  - {arrival_minute: 12, type: "trauma",                severity: 2}
+  - {arrival_minute: 12, type: "trauma",                severity: 2}
+  - {arrival_minute: 13, type: "minor_injury",          severity: 3}
+  - {arrival_minute: 18, type: "fire",                  severity: 2}
+  - {arrival_minute: 22, type: "stroke",                severity: 1}
+  - {arrival_minute: 25, type: "mental_health_crisis",  severity: 3}
+  - {arrival_minute: 30, type: "cardiac_arrest",        severity: 1}
+  - {arrival_minute: 33, type: "minor_injury",          severity: 4}
+  - {arrival_minute: 38, type: "breathing_difficulty",  severity: 2}

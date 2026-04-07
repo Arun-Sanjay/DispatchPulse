@@ -1,0 +1,65 @@
+name: hard
+description: >
+  Earthquake response scenario. 30 calls in 60 minutes, 8 units, 3 hospitals
+  (one on diversion, one near capacity). 35% caller misreporting due to panic.
+  Strong play scores ~0.40-0.55.
+
+grid_size: 15.0
+caller_inaccuracy: 0.35
+
+world_config:
+  grid_size_km: 15.0
+  time_limit_minutes: 60
+  step_duration_minutes: 1
+  call_timeout_minutes: 30
+  max_wait_step_minutes: 5
+
+units:
+  - {unit_id: "ALS-1", unit_type: "als_ambulance", position: {x: 5.0, y: 12.0}, base_position: {x: 5.0, y: 12.0}, status: "available", speed_kmh: 40.0, capabilities: ["cardiac_arrest", "trauma", "stroke", "breathing_difficulty", "minor_injury"]}
+  - {unit_id: "ALS-2", unit_type: "als_ambulance", position: {x: 10.0, y: 5.0}, base_position: {x: 10.0, y: 5.0}, status: "available", speed_kmh: 40.0, capabilities: ["cardiac_arrest", "trauma", "stroke", "breathing_difficulty", "minor_injury"]}
+  - {unit_id: "BLS-1", unit_type: "bls_ambulance", position: {x: 3.0, y: 7.0},  base_position: {x: 3.0, y: 7.0},  status: "available", speed_kmh: 35.0, capabilities: ["trauma", "breathing_difficulty", "minor_injury"]}
+  - {unit_id: "BLS-2", unit_type: "bls_ambulance", position: {x: 12.0, y: 10.0},base_position: {x: 12.0, y: 10.0},status: "available", speed_kmh: 35.0, capabilities: ["trauma", "breathing_difficulty", "minor_injury"]}
+  - {unit_id: "BLS-3", unit_type: "bls_ambulance", position: {x: 7.0, y: 3.0},  base_position: {x: 7.0, y: 3.0},  status: "available", speed_kmh: 35.0, capabilities: ["trauma", "breathing_difficulty", "minor_injury"]}
+  - {unit_id: "FIRE-1",unit_type: "fire_engine",   position: {x: 8.0, y: 8.0},  base_position: {x: 8.0, y: 8.0},  status: "available", speed_kmh: 38.0, capabilities: ["fire"]}
+  - {unit_id: "FIRE-2",unit_type: "fire_engine",   position: {x: 2.0, y: 13.0}, base_position: {x: 2.0, y: 13.0}, status: "available", speed_kmh: 38.0, capabilities: ["fire"]}
+  - {unit_id: "POL-1", unit_type: "police",        position: {x: 7.0, y: 7.0},  base_position: {x: 7.0, y: 7.0},  status: "available", speed_kmh: 50.0, capabilities: ["mental_health_crisis"]}
+
+hospitals:
+  - {hospital_id: "H1", name: "Metro Trauma Center",   position: {x: 6.0, y: 8.0},  capacity: 50, available_beds: 10, has_trauma_center: true,  has_cardiac_unit: true,  has_stroke_unit: true,  on_diversion: false}
+  - {hospital_id: "H2", name: "Community Hospital",    position: {x: 12.0, y: 4.0}, capacity: 25, available_beds: 5,  has_trauma_center: false, has_cardiac_unit: true,  has_stroke_unit: false, on_diversion: false}
+  - {hospital_id: "H3", name: "Childrens Hospital",    position: {x: 3.0, y: 12.0}, capacity: 30, available_beds: 0,  has_trauma_center: false, has_cardiac_unit: false, has_stroke_unit: false, on_diversion: true}
+
+calls:
+  # Earthquake hits
+  - {arrival_minute: 1,  type: "trauma",               severity: 1}
+  - {arrival_minute: 1,  type: "trauma",               severity: 1}
+  - {arrival_minute: 1,  type: "trauma",               severity: 2}
+  - {arrival_minute: 2,  type: "fire",                 severity: 1}
+  - {arrival_minute: 2,  type: "trauma",               severity: 2}
+  - {arrival_minute: 3,  type: "cardiac_arrest",       severity: 1}
+  - {arrival_minute: 3,  type: "breathing_difficulty", severity: 2}
+  - {arrival_minute: 3,  type: "trauma",               severity: 3}
+  - {arrival_minute: 4,  type: "fire",                 severity: 2}
+  - {arrival_minute: 5,  type: "trauma",               severity: 1}
+  # Aftershock
+  - {arrival_minute: 10, type: "trauma",               severity: 1}
+  - {arrival_minute: 10, type: "trauma",               severity: 2}
+  - {arrival_minute: 11, type: "cardiac_arrest",       severity: 1}
+  - {arrival_minute: 11, type: "minor_injury",         severity: 4}
+  - {arrival_minute: 12, type: "mental_health_crisis", severity: 3}
+  - {arrival_minute: 12, type: "breathing_difficulty", severity: 2}
+  - {arrival_minute: 13, type: "fire",                 severity: 1}
+  - {arrival_minute: 14, type: "trauma",               severity: 2}
+  - {arrival_minute: 15, type: "stroke",               severity: 1}
+  - {arrival_minute: 15, type: "minor_injury",         severity: 4}
+  # Ongoing rescue
+  - {arrival_minute: 20, type: "trauma",               severity: 2}
+  - {arrival_minute: 22, type: "cardiac_arrest",       severity: 1}
+  - {arrival_minute: 25, type: "minor_injury",         severity: 3}
+  - {arrival_minute: 28, type: "breathing_difficulty", severity: 2}
+  - {arrival_minute: 32, type: "trauma",               severity: 2}
+  - {arrival_minute: 35, type: "fire",                 severity: 2}
+  - {arrival_minute: 40, type: "mental_health_crisis", severity: 3}
+  - {arrival_minute: 45, type: "stroke",               severity: 1}
+  - {arrival_minute: 50, type: "minor_injury",         severity: 4}
+  - {arrival_minute: 55, type: "trauma",               severity: 2}
