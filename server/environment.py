@@ -30,19 +30,15 @@ from simulation import DispatchSimulation
 from text_view import render_dispatch_center
 
 # Re-export the task registry and grader symbols at module level so static
-# validators that scan server/environment.py for tasks-with-graders can find
-# them here (same pattern as the SQL Repair passing submission where both
-# TASKS and grade_submission live in server/environment.py).
+# validators that scan server/environment.py for tasks can find them here
+# (same pattern as the SQL Repair passing submission where both TASKS and
+# grade_submission are accessible from server/environment.py).
 from task_definitions import (  # noqa: F401,E402
     TASKS,
-    TASK_IDS_WITH_GRADERS,
-    NUM_TASKS_WITH_GRADERS,
-    GRADER_FUNCTIONS,
     TaskDefinition,
     grade_submission,
     get_task,
     list_tasks,
-    run_grader,
 )
 
 DEFAULT_TASK = "easy"
@@ -71,6 +67,7 @@ class DispatchPulseEnvironment(
         self._episode_id: str = str(uuid4())
         self._step_count: int = 0
         self._cumulative_step_reward: float = 0.0
+        self._last_step_reward: float = 0.0
         # Bootstrap so single-shot HTTP /step still works without an explicit reset
         self._bootstrap()
 
@@ -81,8 +78,10 @@ class DispatchPulseEnvironment(
             self.task_name = DEFAULT_TASK
             self.seed = DEFAULT_SEED
             self._cumulative_step_reward = 0.0
+            self._last_step_reward = 0.0
             self._step_count = 0
-        except Exception:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover
+            print(f"[DispatchPulseEnvironment] bootstrap failed: {exc}", file=sys.stderr, flush=True)
             self.sim = None
 
     # ------------------------------------------------------------------
@@ -108,6 +107,7 @@ class DispatchPulseEnvironment(
         self._episode_id = episode_id or str(uuid4())
         self._step_count = 0
         self._cumulative_step_reward = 0.0
+        self._last_step_reward = 0.0
         return self._build_observation(info_message="ready", error=None)
 
     def step(
@@ -186,6 +186,7 @@ class DispatchPulseEnvironment(
             step_reward = -0.05
 
         self._cumulative_step_reward += step_reward
+        self._last_step_reward = step_reward
         return self._build_observation(info_message=info_message, error=error)
 
     @property
@@ -236,10 +237,18 @@ class DispatchPulseEnvironment(
             metadata = {
                 "final_reward": final.model_dump(),
                 "task": self.task_name,
+                "cumulative_step_reward": float(self._cumulative_step_reward),
             }
         else:
-            reward_value = float(self._cumulative_step_reward)
-            metadata = {"task": self.task_name}
+            # Report the per-step delta, not the running cumulative. The
+            # cumulative is still available via state() and metadata, but the
+            # observation's reward field matches the standard Gym/OpenEnv
+            # semantics of "reward for this step only".
+            reward_value = float(self._last_step_reward)
+            metadata = {
+                "task": self.task_name,
+                "cumulative_step_reward": float(self._cumulative_step_reward),
+            }
 
         if info_message:
             metadata["info"] = info_message

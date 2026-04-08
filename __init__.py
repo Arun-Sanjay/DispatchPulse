@@ -16,7 +16,6 @@ Public API:
     grade_submission(...)   — canonical grader function, returns (score, details)
     list_tasks()            — list all TaskDefinitions
     get_task(task_id)       — single task lookup
-    run_grader              — alias for grade_submission
 """
 
 from client import DispatchPulseEnv
@@ -26,15 +25,11 @@ from models import (
     DispatchPulseState,
 )
 from task_definitions import (
-    GRADER_FUNCTIONS,
-    NUM_TASKS_WITH_GRADERS,
-    TASK_IDS_WITH_GRADERS,
     TASKS,
     TaskDefinition,
     grade_submission,
     get_task,
     list_tasks,
-    run_grader,
 )
 
 __all__ = [
@@ -47,9 +42,5 @@ __all__ = [
     "grade_submission",
     "list_tasks",
     "get_task",
-    "run_grader",
-    "NUM_TASKS_WITH_GRADERS",
-    "TASK_IDS_WITH_GRADERS",
-    "GRADER_FUNCTIONS",
 ]
 __version__ = "1.0.0"

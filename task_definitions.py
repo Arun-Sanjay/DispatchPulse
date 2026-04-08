@@ -4,20 +4,17 @@ This module is the canonical source of truth for the three graded tasks that
 DispatchPulse ships. Each task is declared as a frozen ``TaskDefinition``
 dataclass and registered in the module-level ``TASKS`` dict. This mirrors the
 pattern used by other passing Meta PyTorch OpenEnv Hackathon submissions
-(see e.g. Calendar Scheduling, SQL Repair) so static validators that scan
-the repo for tasks-with-graders can discover them.
+(e.g. Calendar Scheduling).
 
-Every task in ``TASKS`` has:
-  - A ``task_id`` that matches the YAML file name in ``tasks/``
-  - A grader accessible via the module-level ``grade_submission(task_id, ...)``
-    function below, which returns a deterministic score in [0.0, 1.0].
+Every task in ``TASKS`` is graded by the module-level ``grade_submission``
+function below, which returns a deterministic score in [0.0, 1.0].
 
 There are exactly three tasks: ``easy``, ``medium``, ``hard``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional, Tuple
 
 from grader import grade_simulation
@@ -50,8 +47,6 @@ class TaskDefinition:
         num_hospitals: Number of hospitals on the map.
         caller_inaccuracy: Fraction of callers who misreport the emergency
             type or severity (0.0 = always accurate, 1.0 = always wrong).
-        has_grader: True if this task has a grader registered below.
-        grader_fn_name: Name of the grader function (for introspection).
     """
 
     task_id: str
@@ -64,8 +59,6 @@ class TaskDefinition:
     num_units: int
     num_hospitals: int
     caller_inaccuracy: float
-    has_grader: bool = True
-    grader_fn_name: str = "grade_submission"
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +81,6 @@ def _build_task(task_id: str, name: str, difficulty: str, description: str) -> T
         num_units=len(scenario.get("units", [])),
         num_hospitals=len(scenario.get("hospitals", [])),
         caller_inaccuracy=float(scenario.get("caller_inaccuracy", 0.0)),
-        has_grader=True,
-        grader_fn_name="grade_submission",
     )
 
 
@@ -268,21 +259,3 @@ def _replay_actions(sim: DispatchSimulation, actions: List[Dict]) -> None:
             continue
         else:
             sim.advance_time(1)
-
-
-# ---------------------------------------------------------------------------
-# Module-level constants the validator may introspect
-# ---------------------------------------------------------------------------
-
-#: Number of tasks with graders in this environment.
-NUM_TASKS_WITH_GRADERS: int = sum(1 for t in TASKS.values() if t.has_grader)
-
-#: List of task ids that have graders.
-TASK_IDS_WITH_GRADERS: List[str] = [t.task_id for t in TASKS.values() if t.has_grader]
-
-#: List of grader function names registered for the tasks above.
-GRADER_FUNCTIONS: List[str] = ["grade_submission"]
-
-# Re-export the grader function under the common alias ``run_grader`` so
-# validators that grep for that specific name also find it.
-run_grader = grade_submission
