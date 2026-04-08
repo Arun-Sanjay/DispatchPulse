@@ -28,7 +28,6 @@ COPY --from=builder /app/env /app/env
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
-ENV ENABLE_WEB_INTERFACE=true
 
 EXPOSE 8000
 

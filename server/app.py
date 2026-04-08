@@ -1,18 +1,15 @@
 """FastAPI application for DispatchPulse.
 
-Uses ``create_app(...)`` from openenv-core for the standard ``/reset``,
-``/step``, ``/state``, ``/health``, ``/metadata``, ``/schema``, ``/ws`` routes
-plus the Gradio UI at ``/`` (when ``ENABLE_WEB_INTERFACE=true``).
+Uses ``create_fastapi_app(...)`` from openenv-core for the standard ``/reset``,
+``/step``, ``/state``, ``/health``, ``/metadata``, ``/schema``, ``/ws`` routes.
 
-On top of that baseline we add three DispatchPulse-specific endpoints the
+On top of that baseline we add four DispatchPulse-specific endpoints the
 hackathon grader discovers:
 
-- ``GET /tasks`` — list the 3 graded tasks with metadata
+- ``GET /``          — Root metadata (name, status, endpoints)
+- ``GET /tasks``     — list the 3 graded tasks
 - ``GET /tasks/{task_id}`` — single-task metadata lookup
-- ``POST /grader`` — score an episode (silent run or replayed action list)
-
-All three endpoints pull from :mod:`task_definitions`, which is the canonical
-task registry for the repo.
+- ``POST /grader``   — score an episode (silent run or replayed action list)
 """
 
 from __future__ import annotations
@@ -26,11 +23,11 @@ from pydantic import BaseModel, Field
 
 # Support both in-repo and standalone imports.
 try:
-    from openenv.core.env_server.http_server import create_app
+    from openenv.core.env_server import create_fastapi_app
 
     from .environment import DispatchPulseEnvironment
 except ImportError:  # pragma: no cover
-    from openenv.core.env_server.http_server import create_app
+    from openenv.core.env_server import create_fastapi_app
     from server.environment import DispatchPulseEnvironment
 
 # Import project root modules
@@ -40,25 +37,43 @@ if _PKG_ROOT not in sys.path:
 
 from models import DispatchPulseAction, DispatchPulseObservation  # noqa: E402
 from task_definitions import (  # noqa: E402
-    GRADER_FUNCTIONS,
-    NUM_TASKS_WITH_GRADERS,
-    TASK_IDS_WITH_GRADERS,
     TASKS,
-    TaskDefinition,
     grade_submission,
     get_task,
     list_tasks as _list_tasks,
-    run_grader,
 )
 
-# Create the standard OpenEnv app (Gradio UI + HTTP API routes).
-app = create_app(
+# Create the standard OpenEnv app (API-only — no Gradio UI).
+app = create_fastapi_app(
     DispatchPulseEnvironment,
     DispatchPulseAction,
     DispatchPulseObservation,
-    env_name="dispatchpulse",
-    max_concurrent_envs=8,
 )
+
+
+# ---------------------------------------------------------------------------
+# GET / — root metadata
+# ---------------------------------------------------------------------------
+
+
+@app.get("/", tags=["DispatchPulse"])
+def root() -> Dict[str, Any]:
+    """Root endpoint returning basic metadata about the environment."""
+    return {
+        "name": "dispatchpulse",
+        "status": "ok",
+        "description": "Emergency dispatch coordinator OpenEnv environment",
+        "endpoints": [
+            "/health",
+            "/tasks",
+            "/tasks/{task_id}",
+            "/reset",
+            "/step",
+            "/state",
+            "/grader",
+        ],
+        "tasks": ["easy", "medium", "hard"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -66,74 +81,55 @@ app = create_app(
 # ---------------------------------------------------------------------------
 
 
-class TaskInfo(BaseModel):
-    """HTTP-serializable view of a TaskDefinition."""
-
-    task_id: str
-    name: str
-    difficulty: str
-    description: str
-    max_steps: int
-    time_limit_minutes: int
-    num_calls: int
-    num_units: int
-    num_hospitals: int
-    caller_inaccuracy: float
-    has_grader: bool
-    grader_fn_name: str
+_ACTION_SCHEMA = {
+    "action_type": "string — one of: dispatch, classify, callback, wait, view",
+    "text": "string — e.g. 'dispatch CALL-001 ALS-1 H1'",
+    "call_id": "string (optional)",
+    "unit_id": "string (optional)",
+    "hospital_id": "string (optional)",
+    "severity": "integer 1-5 (optional)",
+    "message": "string (optional)",
+    "minutes": "integer 1-5 (optional)",
+}
 
 
-class TaskListResponse(BaseModel):
-    tasks: List[TaskInfo]
-    count: int
-    num_tasks_with_graders: int
-    task_ids_with_graders: List[str]
-    grader_functions: List[str]
-
-
-def _task_to_info(t: TaskDefinition) -> TaskInfo:
-    return TaskInfo(
-        task_id=t.task_id,
-        name=t.name,
-        difficulty=t.difficulty,
-        description=t.description,
-        max_steps=t.max_steps,
-        time_limit_minutes=t.time_limit_minutes,
-        num_calls=t.num_calls,
-        num_units=t.num_units,
-        num_hospitals=t.num_hospitals,
-        caller_inaccuracy=t.caller_inaccuracy,
-        has_grader=t.has_grader,
-        grader_fn_name=t.grader_fn_name,
-    )
-
-
-@app.get("/tasks", tags=["DispatchPulse"], response_model=TaskListResponse)
-def list_tasks_endpoint() -> TaskListResponse:
-    """Return the full list of graded tasks.
+@app.get("/tasks", tags=["DispatchPulse"])
+def list_tasks_endpoint() -> Dict[str, Any]:
+    """Return the list of graded tasks.
 
     DispatchPulse ships with exactly three deterministic tasks — ``easy``,
     ``medium``, ``hard`` — each with its own grader (``grade_submission``)
     that returns a score in [0.0, 1.0] at episode end.
     """
     task_list = _list_tasks()
-    return TaskListResponse(
-        tasks=[_task_to_info(t) for t in task_list],
-        count=len(task_list),
-        num_tasks_with_graders=NUM_TASKS_WITH_GRADERS,
-        task_ids_with_graders=TASK_IDS_WITH_GRADERS,
-        grader_functions=GRADER_FUNCTIONS,
-    )
+    return {
+        "tasks": [
+            {
+                "task_id": t.task_id,
+                "name": t.name,
+                "difficulty": t.difficulty,
+                "description": t.description,
+            }
+            for t in task_list
+        ],
+        "total": len(TASKS),
+        "action_schema": _ACTION_SCHEMA,
+    }
 
 
-@app.get("/tasks/{task_id}", tags=["DispatchPulse"], response_model=TaskInfo)
-def get_task_endpoint(task_id: str) -> TaskInfo:
+@app.get("/tasks/{task_id}", tags=["DispatchPulse"])
+def get_task_endpoint(task_id: str) -> Dict[str, Any]:
     """Return metadata for a single task by id."""
     try:
         task = get_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return _task_to_info(task)
+    return {
+        "task_id": task.task_id,
+        "name": task.name,
+        "difficulty": task.difficulty,
+        "description": task.description,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -157,28 +153,13 @@ class GraderRequest(BaseModel):
     )
 
 
-class GraderResult(BaseModel):
-    """Response from POST /grader."""
-
-    task_id: str
-    score: float = Field(..., ge=0.0, le=1.0)
-    passed: bool
-    details: str
-    survival_score: float
-    efficiency_score: float
-    triage_accuracy: float
-    penalty: float
-    completed_calls: int
-    timed_out_calls: int
-    total_calls: int
-
-
-@app.post("/grader", tags=["DispatchPulse"], response_model=GraderResult)
-def grader_endpoint(payload: GraderRequest) -> GraderResult:
+@app.post("/grader", tags=["DispatchPulse"])
+def grader_endpoint(payload: GraderRequest) -> Dict[str, Any]:
     """Grade a task submission.
 
     Delegates to :func:`task_definitions.grade_submission` which is the
-    canonical grader for DispatchPulse.
+    canonical grader for DispatchPulse. Returns a dict with `task_id`,
+    `score`, `passed`, and reward component breakdown.
     """
     task_id = (payload.task_id or "easy").strip().lower()
     try:
@@ -190,19 +171,19 @@ def grader_endpoint(payload: GraderRequest) -> GraderResult:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    return GraderResult(
-        task_id=details["task_id"],
-        score=details["score"],
-        passed=details["passed"],
-        details=details["details"],
-        survival_score=details["survival_score"],
-        efficiency_score=details["efficiency_score"],
-        triage_accuracy=details["triage_accuracy"],
-        penalty=details["penalty"],
-        completed_calls=details["completed_calls"],
-        timed_out_calls=details["timed_out_calls"],
-        total_calls=details["total_calls"],
-    )
+    return {
+        "task_id": details["task_id"],
+        "score": details["score"],
+        "passed": details["passed"],
+        "details": details["details"],
+        "survival_score": details["survival_score"],
+        "efficiency_score": details["efficiency_score"],
+        "triage_accuracy": details["triage_accuracy"],
+        "penalty": details["penalty"],
+        "completed_calls": details["completed_calls"],
+        "timed_out_calls": details["timed_out_calls"],
+        "total_calls": details["total_calls"],
+    }
 
 
 def main() -> None:
