@@ -1,4 +1,16 @@
-"""DispatchPulse data models. All Pydantic v2."""
+"""DispatchPulse data models.
+
+Two layers:
+
+1. **OpenEnv interface models** — ``DispatchPulseAction``, ``DispatchPulseObservation``,
+   ``DispatchPulseState``. These inherit directly from openenv-core base classes
+   and form the wire format the server/client/grader exchange.
+
+2. **Internal simulation models** — ``Position``, ``EmergencyType``, ``Severity``,
+   ``UnitType``, ``UnitStatus``, ``EmergencyCall``, ``EmergencyUnit``, ``Hospital``,
+   ``WorldConfig``, ``Reward``. These are plain Pydantic models the simulation
+   engine uses internally; they never cross the OpenEnv boundary directly.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +19,96 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+# ---------------------------------------------------------------------------
+# OpenEnv base classes
+# ---------------------------------------------------------------------------
+from openenv.core.env_server.types import Action, Observation, State
+
+
+# ===========================================================================
+# OpenEnv-facing wire types
+# ===========================================================================
+
+
+class DispatchPulseAction(Action):
+    """A single dispatcher action.
+
+    The agent supplies ``action_type`` plus optional fields. The simplest
+    possible interface for an LLM is the ``text`` field — the server will
+    parse it as a command line like ``"dispatch CALL-001 ALS-1 H1"``.
+
+    Supported action types:
+        - ``dispatch``  : send a unit to a call (call_id, unit_id, hospital_id?)
+        - ``classify``  : reclassify a call's severity (call_id, severity)
+        - ``callback``  : phone the caller back (call_id, message)
+        - ``wait``      : skip ahead in simulation time (minutes)
+        - ``view``      : free inspection (no time cost)
+    """
+
+    action_type: str = Field(
+        ..., description="One of: dispatch, classify, callback, wait, view"
+    )
+    text: str = Field(
+        default="",
+        description="Free-text representation of the action (e.g. 'dispatch CALL-001 ALS-1 H1')",
+    )
+    call_id: Optional[str] = Field(default=None)
+    unit_id: Optional[str] = Field(default=None)
+    hospital_id: Optional[str] = Field(default=None)
+    severity: Optional[int] = Field(default=None, ge=1, le=5)
+    message: Optional[str] = Field(default=None)
+    minutes: Optional[int] = Field(default=None, ge=1, le=5)
+
+
+class DispatchPulseObservation(Observation):
+    """What the dispatcher sees each turn.
+
+    The ``text`` field is the human-readable dispatch center view that the
+    LLM agent reads. The structured fields underneath are useful for
+    programmatic agents and grading.
+    """
+
+    text: str = Field(default="", description="Formatted dispatch center view for the agent")
+    current_time: int = Field(default=0, description="Simulation minute")
+    time_limit: int = Field(default=30, description="Episode time limit (minutes)")
+    calls_pending: int = Field(default=0, description="Number of calls waiting for dispatch")
+    units_available: int = Field(default=0, description="Number of free units")
+    calls_completed: int = Field(default=0)
+    calls_timed_out: int = Field(default=0)
+    total_calls: int = Field(default=0)
+    last_action_error: Optional[str] = Field(
+        default=None, description="Error message from the last action, or None"
+    )
+    info_message: Optional[str] = Field(
+        default=None, description="Free-text message describing what just happened"
+    )
+
+
+class DispatchPulseState(State):
+    """Internal state snapshot exposed via ``GET /state``."""
+
+    current_time: int = Field(default=0)
+    episode_done: bool = Field(default=False)
+    total_calls: int = Field(default=0)
+    calls_dispatched: int = Field(default=0)
+    calls_completed: int = Field(default=0)
+    calls_timed_out: int = Field(default=0)
+    calls_pending: int = Field(default=0)
+    units_available: int = Field(default=0)
+    running_reward: float = Field(default=0.0)
+    task_name: str = Field(default="easy")
+
+
+# ===========================================================================
+# Internal simulation models (plain Pydantic, never cross OpenEnv boundary)
+# ===========================================================================
+
 
 class Position(BaseModel):
     """A 2D coordinate on the city grid (km)."""
 
-    x: float = Field(..., ge=0.0, description="X coordinate in km")
-    y: float = Field(..., ge=0.0, description="Y coordinate in km")
+    x: float = Field(..., ge=0.0)
+    y: float = Field(..., ge=0.0)
 
 
 class EmergencyType(str, Enum):
@@ -49,7 +145,7 @@ class UnitStatus(str, Enum):
 
 class EmergencyCall(BaseModel):
     call_id: str
-    timestamp: int = Field(..., description="Minute of simulation when call arrived")
+    timestamp: int
     caller_description: str
     location: Position
     true_type: EmergencyType
@@ -107,19 +203,3 @@ class Reward(BaseModel):
     triage_accuracy: float
     penalty: float
     details: str = ""
-
-
-class EnvironmentSnapshot(BaseModel):
-    """Lightweight environment state snapshot for state() / debugging."""
-
-    current_time: int
-    episode_done: bool
-    total_calls: int
-    calls_dispatched: int
-    calls_completed: int
-    calls_timed_out: int
-    calls_pending: int
-    units_available: int
-    step_count: int
-    running_reward: float
-    task_name: Optional[str] = None
