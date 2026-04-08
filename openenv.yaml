@@ -1,35 +1,16 @@
-spec_version: 1
 name: dispatchpulse
-type: space
-runtime: fastapi
-app: server.app:app
-port: 8000
-
-# Graded tasks — each has a deterministic grader returning a score in [0.0, 1.0]
+version: 1.0.0
+description: Emergency dispatch coordinator environment. The agent triages incoming 911 calls and dispatches limited units under time pressure. Rewards use real clinical survival curves from EMS literature.
+entrypoint: server.app:app
+type: http
+spec_version: "1.0"
 tasks:
   - id: easy
-    name: easy
-    difficulty: easy
-    description: >
-      Routine urban shift. Five calls over 30 minutes, four units (ALS, BLS,
-      fire engine, police), one well-equipped hospital. Callers report
-      accurately. Optimal play scores ~0.85+.
-    has_grader: true
-
+    name: "Routine Urban Shift"
+    description: "Five emergency calls arrive over 30 minutes. Four units (ALS, BLS, fire engine, police) and one well-equipped hospital. Accurate callers. Optimal play scores 0.85 or higher."
   - id: medium
-    name: medium
-    difficulty: medium
-    description: >
-      Urban scenario. 15 calls in 45 minutes, 6 units, 2 hospitals. Mass
-      casualty bus accident at minute 12 and 20% caller inaccuracy.
-      Reasonable play scores ~0.55-0.70.
-    has_grader: true
-
+    name: "Urban Mass Casualty"
+    description: "Fifteen calls over 45 minutes including a bus accident at minute 12 that spawns multiple severity-1 trauma calls. Six units, two hospitals, 20% caller inaccuracy. Core challenge is ALS conservation."
   - id: hard
-    name: hard
-    difficulty: hard
-    description: >
-      Earthquake response scenario. 30 calls in 60 minutes, 8 units,
-      3 hospitals (one on diversion). 35% caller misreporting due to panic.
-      Strong play scores ~0.40-0.55.
-    has_grader: true
+    name: "Earthquake Response"
+    description: "Thirty calls over 60 minutes. Eight units, three hospitals (one on diversion). 35% caller misreporting due to panic. Deliberately resource-scarce; strong play scores 0.40 to 0.55."
