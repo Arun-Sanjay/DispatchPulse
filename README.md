@@ -41,7 +41,7 @@ this crisis as an interactive RL environment where the agent has to learn the
 The reward function uses real clinical survival curves from the EMS literature
 (Larsen et al. 1993 for cardiac arrest; Saver 2006 "Time is Brain" for stroke;
 golden hour curves for trauma). It's deterministic, defensible, and gives a
-continuous signal that an RL agent can actually learn from.
+continuous signal an RL agent can actually learn from.
 
 ---
 
@@ -50,39 +50,81 @@ continuous signal that an RL agent can actually learn from.
 | Requirement | Status |
 |---|---|
 | Real-world task (not games or toys) | ✅ Emergency dispatch — actual profession |
-| Typed Pydantic models | ✅ `models.py` |
-| `step()` / `reset()` / `state()` API | ✅ via `MCPEnvironment` base class |
+| Typed Pydantic models inheriting from OpenEnv `Action` / `Observation` / `State` | ✅ `models.py` |
+| `Environment` base-class subclass with `reset()` / `step()` / `state` | ✅ `server/environment.py` |
+| FastAPI server via `create_fastapi_app(...)` | ✅ `server/app.py` |
+| `EnvClient` client with `_step_payload` / `_parse_result` / `_parse_state` | ✅ `client.py` |
 | `openenv.yaml` manifest | ✅ |
 | ≥ 3 tasks with graders, scores 0.0–1.0 | ✅ easy / medium / hard |
 | Meaningful reward + partial progress | ✅ survival curves + per-step rewards |
-| Baseline `inference.py` at root | ✅ heuristic & LLM modes |
+| `inference.py` at root, OpenAI client, mandatory env vars, `[START]/[STEP]/[END]` format | ✅ |
 | Reproducible (fixed seed) | ✅ `seed=42` default everywhere |
+| Pre-submission validator script | ✅ `scripts/validate-submission.sh` |
 | Dockerfile + HF Spaces deploy | ✅ uses `openenv-base` |
+| Runs on 2 vCPU / 8 GB RAM | ✅ pure Python math, no ML inference |
 
 ---
 
-## Action space (MCP tools)
+## Project layout (canonical OpenEnv structure)
 
-DispatchPulse exposes its interface as MCP tools, the canonical OpenEnv pattern:
+```
+DispatchPulse/
+├── README.md
+├── Dockerfile               # uses ghcr.io/meta-pytorch/openenv-base
+├── openenv.yaml             # OpenEnv manifest
+├── pyproject.toml
+├── inference.py             # ROUND 1 ENTRY POINT — must be in root
+├── client.py                # DispatchPulseEnv (subclass of EnvClient)
+├── models.py                # DispatchPulseAction / Observation / State
+│                            # plus internal sim models
+├── simulation.py            # DispatchSimulation engine
+├── reward.py                # Survival curves + episode reward
+├── grader.py                # Programmatic 0.0–1.0 grader
+├── scenario_loader.py       # YAML task loader
+├── text_view.py             # LLM-friendly dispatch center renderer
+├── utils.py                 # Distance / ETA / templates
+├── server/
+│   ├── __init__.py
+│   ├── app.py               # FastAPI app via create_fastapi_app(...)
+│   └── environment.py       # DispatchPulseEnvironment(Environment)
+├── tasks/
+│   ├── easy.yaml
+│   ├── medium.yaml
+│   └── hard.yaml
+├── scripts/
+│   └── validate-submission.sh   # runs the 3 grader checks locally
+└── tests/
+    ├── test_reward.py
+    └── test_simulation.py
+```
 
-| Tool | Args | Time cost | What it does |
+---
+
+## Action space (typed Pydantic)
+
+`DispatchPulseAction` has these `action_type` values:
+
+| `action_type` | Required fields | Time cost | What it does |
 |---|---|---|---|
-| `view_dispatch_center` | none | free | Returns the current dispatch center as text. |
-| `dispatch` | `call_id`, `unit_id`, `hospital_id?` | 1 min | Send a unit to a call (optionally pre-routing to a destination hospital). |
-| `classify` | `call_id`, `severity` | 1 min | Reclassify a call's severity (1–5). |
-| `callback` | `call_id`, `question` | 1 min | Phone the caller back. 70% chance they clarify the true emergency type. |
-| `wait` | `minutes` (default 1) | n min (≤5) | Skip ahead in the simulation when there's nothing to do. |
+| `dispatch` | `call_id`, `unit_id`, `hospital_id?` | 1 min | Send a unit to a call (optionally pre-routing to a hospital). |
+| `classify` | `call_id`, `severity` (1-5) | 1 min | Reclassify a call's severity. |
+| `callback` | `call_id`, `message` | 1 min | Phone the caller back. 70% chance they clarify the true emergency type. |
+| `wait` | `minutes` (default 1, max 5) | n min | Skip ahead in the simulation when there's nothing to do. |
+| `view` | — | free | Re-fetch the dispatch center text without advancing time. |
+
+The action also has a free-text `text` field — the server parses lines like
+`dispatch CALL-001 ALS-1 H1` so an LLM can produce them directly.
 
 ## Observation space
 
-Each tool returns a structured text view of the dispatch center:
-- Pending calls (truncated to top 8 by severity for context-window safety)
-- Available units with closest-call ETAs
-- Busy units with their status
-- Hospital roster with bed availability and specialties
-- Recent outcomes
+`DispatchPulseObservation` has:
 
-The full text view is also available for inspection via `view_dispatch_center()`.
+- `text` — formatted dispatch center view (the field the LLM reads)
+- `current_time`, `time_limit`
+- `calls_pending`, `units_available`, `calls_completed`, `calls_timed_out`, `total_calls`
+- `last_action_error` — error string from the previous action, or `None`
+- `info_message` — what just happened
+- inherited `done`, `reward`, `metadata`
 
 ## Tasks
 
@@ -90,7 +132,7 @@ The full text view is also available for inspection via `view_dispatch_center()`
 |---|---|---|---|---|---|---|
 | `easy` | 5 | 4 | 1 | 30 min | 0% | Basic dispatch — learn the action grammar |
 | `medium` | 15 | 6 | 2 | 45 min | 20% | Mass casualty bus accident at minute 12; some callers lie |
-| `hard` | 30 | 8 | 3 (1 on diversion) | 60 min | 35% | Earthquake response — extreme scarcity, panicked callers, hospital triage matters |
+| `hard` | 30 | 8 | 3 (1 on diversion) | 60 min | 35% | Earthquake — extreme scarcity, panicked callers, hospital triage matters |
 
 All three are deterministic given the seed.
 
@@ -111,7 +153,7 @@ Severity weights inside the survival score: **3× for severity 1, 2× for 2, 1.5
 
 ### Survival curves (from EMS literature)
 
-| Emergency | Curve | Notes |
+| Emergency | Curve | Source / notes |
 |---|---|---|
 | Cardiac arrest | exponential, ~10%/min decay | Larsen et al. 1993 |
 | Trauma | sigmoid centred at 45 min | "golden hour" |
@@ -127,27 +169,75 @@ Each call's outcome is multiplied by:
 
 ---
 
-## Baseline scores
+## Baseline scores (heuristic agent, seed=42)
 
-Both runs use the same fixed seed (`42`) and are reproducible.
+A simple rule-based heuristic (always pick the most-critical call, send the
+most effective available unit, reserve ALS for high-severity calls) produces
+the following calibrated scores:
 
-### Heuristic agent (no LLM, just rule-based triage)
-
-| Task | Total | Survival | Efficiency | Triage | Penalty |
-|---|---|---|---|---|---|
-| easy   | 0.5476 | 0.463 | 0.800 | 1.000 | −0.000 |
-| medium | 0.3750 | 0.377 | 0.600 | 0.500 | −0.160 |
-| hard   | 0.2183 | 0.214 | 0.433 | 0.500 | −0.500 |
-| **Average** | **0.3803** | | | | |
+| Task | Total | Survival | Efficiency | Triage | Penalty | Completed/Total |
+|---|---|---|---|---|---|---|
+| easy   | 0.5476 | 0.463 | 0.800 | 1.000 | −0.000 | 4/5 |
+| medium | 0.3750 | 0.377 | 0.600 | 0.500 | −0.160 | 9/15 |
+| hard   | 0.2183 | 0.214 | 0.433 | 0.500 | −0.500 | 13/30 |
+| **Average** | **0.3803** | | | | | |
 
 The clean monotonic decrease across difficulty (easy > medium > hard) confirms
 the env discriminates between scenarios as designed.
 
-### LLM agent (GPT-4o-mini, default settings)
+---
 
-Run with: `OPENAI_API_KEY=sk-... python inference.py --agent llm --model gpt-4o-mini`
+## Inference script — `inference.py`
 
-Run on your own infrastructure to compare against the heuristic baseline.
+Per the hackathon spec, `inference.py` is in the **project root** and follows
+the mandatory contract:
+
+### Required environment variables
+
+| Variable | Purpose | Default in script |
+|---|---|---|
+| `API_BASE_URL` | LLM endpoint | `https://router.huggingface.co/v1` |
+| `MODEL_NAME` | Which model to call | `Qwen/Qwen2.5-72B-Instruct` |
+| `HF_TOKEN` | API key for the LLM | (no default) |
+| `LOCAL_IMAGE_NAME` | Docker image for `from_docker_image()` | (no default) |
+| `DISPATCHPULSE_TASK` | Which task to run (`easy`/`medium`/`hard`) | `easy` |
+
+### Stdout format (verbatim)
+
+```
+[START] task=<task_name> env=dispatchpulse model=<model_name>
+[STEP] step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+[END] success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
+```
+
+- One `[START]` line at episode begin
+- One `[STEP]` line per step, immediately after `env.step()` returns
+- One `[END]` line after `env.close()`, ALWAYS emitted (even on exception)
+- `reward` and `rewards` to 2 decimal places; `score` to 3 decimal places
+- `done` and `success` are lowercase booleans
+
+### Connection logic
+
+1. If `LOCAL_IMAGE_NAME` is set → `await DispatchPulseEnv.from_docker_image(LOCAL_IMAGE_NAME)`
+2. Else if `ENV_BASE_URL` is set → connect directly to a running env server
+3. Otherwise → spin up an in-process simulation as a fallback (for offline runs)
+
+### Run it
+
+```bash
+# Against the live HF Space
+ENV_BASE_URL=https://arun-sanjay-dispatchpulse.hf.space \
+HF_TOKEN=$HF_TOKEN \
+python inference.py
+
+# Against a local Docker image
+LOCAL_IMAGE_NAME=dispatchpulse:latest \
+HF_TOKEN=$HF_TOKEN \
+python inference.py
+
+# In-process fallback (no network, no Docker)
+python inference.py
+```
 
 ---
 
@@ -158,7 +248,7 @@ Run on your own infrastructure to compare against the heuristic baseline.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
-python inference.py --agent heuristic
+python inference.py
 ```
 
 ### Run locally with Docker
@@ -170,22 +260,44 @@ docker run -p 8000:8000 dispatchpulse
 curl http://localhost:8000/health
 ```
 
-### Use as a client (OpenEnv MCPToolClient pattern)
+### Use as a client (OpenEnv `EnvClient` pattern)
 
 ```python
+import asyncio
 from client import DispatchPulseEnv
+from models import DispatchPulseAction
 
-with DispatchPulseEnv(base_url="http://localhost:8000") as env:
-    env.reset(task_name="easy", seed=42)
-    print(env.call_tool("view_dispatch_center"))
-    env.call_tool("dispatch", call_id="CALL-001", unit_id="BLS-1", hospital_id="H1")
-    env.call_tool("wait", minutes=1)
+async def main():
+    async with DispatchPulseEnv(base_url="https://arun-sanjay-dispatchpulse.hf.space") as env:
+        result = await env.reset(task_name="easy", seed=42)
+        while not result.done:
+            action = DispatchPulseAction(action_type="wait", minutes=1, text="wait 1")
+            result = await env.step(action)
+            print(result.observation.text[:200])
+        print(f"Final score: {result.reward}")
+
+asyncio.run(main())
 ```
 
 ### Run on Hugging Face Spaces
 
-This repo is auto-built as a Docker Space. Visit:
+Auto-built as a Docker Space:
 [`https://huggingface.co/spaces/Arun-Sanjay/dispatchpulse`](https://huggingface.co/spaces/Arun-Sanjay/dispatchpulse)
+
+---
+
+## Pre-submission validator
+
+Run the same three checks the hackathon's automated grader runs:
+
+```bash
+./scripts/validate-submission.sh https://arun-sanjay-dispatchpulse.hf.space .
+```
+
+It checks:
+1. **HF Space deploys** — `POST /reset` returns HTTP 200
+2. **Docker build** — `docker build .` succeeds (≤ 10 min)
+3. **OpenEnv compliance** — `openenv validate` passes
 
 ---
 
@@ -201,41 +313,10 @@ python tests/test_simulation.py
 These verify that:
 - Survival curves match published clinical numbers
 - A "do-nothing" agent scores below 0.15 on every task
-- The heuristic agent strictly outperforms the silent agent
+- A simple heuristic strictly outperforms the silent agent
 - Heuristic scores monotonically decrease easy → medium → hard
 - ALS at cardiac arrest beats fire engine at cardiac arrest by ≥5×
 - Specialty hospital match boosts outcome; diversion hurts it
-
----
-
-## Project layout
-
-```
-DispatchPulse/
-├── README.md                # this file
-├── Dockerfile               # uses openenv-base image
-├── openenv.yaml             # OpenEnv manifest
-├── pyproject.toml
-├── inference.py             # ROUND 1 REQUIRED: baseline runner with --agent llm/heuristic
-├── client.py                # DispatchPulseEnv (extends MCPToolClient)
-├── models.py                # Pydantic models (Position, EmergencyCall, ...)
-├── simulation.py            # DispatchSimulation engine
-├── reward.py                # Survival curves + episode reward
-├── grader.py                # Programmatic 0.0–1.0 grader
-├── scenario_loader.py       # YAML task loader
-├── text_view.py             # LLM-friendly dispatch center renderer
-├── utils.py                 # Distance/ETA/templates
-├── server/
-│   ├── app.py               # FastAPI app via openenv create_app
-│   └── dispatchpulse_environment.py  # MCPEnvironment subclass
-├── tasks/
-│   ├── easy.yaml
-│   ├── medium.yaml
-│   └── hard.yaml
-└── tests/
-    ├── test_reward.py
-    └── test_simulation.py
-```
 
 ---
 
