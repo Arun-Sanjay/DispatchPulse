@@ -87,24 +87,68 @@ def test_silent_agent_easy_scores_low():
     assert r.total < 0.15, f"silent agent scored {r.total}"
 
 
-def test_heuristic_easy_beats_silent():
-    """The heuristic agent should score noticeably above silent."""
-    from inference import run_heuristic
+def _run_simple_heuristic(sim: "DispatchSimulation", max_steps: int = 200) -> None:
+    """Tiny rule-based agent used by tests to confirm the env discriminates.
 
+    Picks the most-critical pending call and assigns the most effective
+    available unit to it; otherwise waits one minute.
+    """
+    from reward import get_effectiveness
+    from utils import calculate_distance
+
+    steps = 0
+    while not sim.episode_done and steps < max_steps:
+        pending = sim.get_pending_calls()
+        avail = sim.get_available_units()
+        if not pending or not avail:
+            sim.advance_time(1)
+            steps += 1
+            continue
+
+        sev_w = {1: 6.0, 2: 4.0, 3: 2.0, 4: 1.0, 5: 0.5}
+        best = None
+        best_score = float("-inf")
+        for call in pending:
+            w = sev_w.get(
+                call.reported_severity.value if call.reported_severity else 5, 1.0
+            )
+            for unit in avail:
+                eff = get_effectiveness(unit.unit_type, call.true_type)
+                if eff < 0.30:
+                    continue
+                dist = calculate_distance(unit.position, call.location)
+                penalty = 0.5 if (
+                    unit.unit_type.value == "als_ambulance"
+                    and call.true_severity.value >= 4
+                ) else 0.0
+                score = w * eff - penalty - 0.05 * dist
+                if score > best_score:
+                    best_score = score
+                    best = (call, unit)
+
+        if best is None:
+            sim.advance_time(1)
+        else:
+            call, unit = best
+            sim.dispatch(call_id=call.call_id, unit_id=unit.unit_id)
+            sim.advance_time(1)
+        steps += 1
+
+
+def test_heuristic_easy_beats_silent():
+    """A simple heuristic agent should score noticeably above silent."""
     sim = DispatchSimulation(load_scenario("easy"), seed=42)
-    run_heuristic(sim)
+    _run_simple_heuristic(sim)
     r = grade_simulation(sim)
     assert r.total > 0.30, f"heuristic on easy scored only {r.total}"
 
 
 def test_difficulty_progression():
     """Heuristic should score higher on easy than on hard."""
-    from inference import run_heuristic
-
     scores = {}
     for task in ("easy", "medium", "hard"):
         sim = DispatchSimulation(load_scenario(task), seed=42)
-        run_heuristic(sim)
+        _run_simple_heuristic(sim)
         scores[task] = grade_simulation(sim).total
     assert scores["easy"] > scores["hard"], (
         f"heuristic easy {scores['easy']} should beat hard {scores['hard']}"
