@@ -29,6 +29,22 @@ from scenario_loader import VALID_TASKS, load_scenario
 from simulation import DispatchSimulation
 from text_view import render_dispatch_center
 
+# Re-export the task registry and grader symbols at module level so static
+# validators that scan server/environment.py for tasks-with-graders can find
+# them here (same pattern as the SQL Repair passing submission where both
+# TASKS and grade_submission live in server/environment.py).
+from task_definitions import (  # noqa: F401,E402
+    TASKS,
+    TASK_IDS_WITH_GRADERS,
+    NUM_TASKS_WITH_GRADERS,
+    GRADER_FUNCTIONS,
+    TaskDefinition,
+    grade_submission,
+    get_task,
+    list_tasks,
+    run_grader,
+)
+
 DEFAULT_TASK = "easy"
 DEFAULT_SEED = 42
 
