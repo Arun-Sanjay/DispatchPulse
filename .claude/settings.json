@@ -1,0 +1,15 @@
+{
+  "projectName": "DispatchPulse",
+  "description": "Meta PyTorch OpenEnv Hackathon India 2026 submission — emergency dispatch RL environment",
+  "skills": {
+    "autoLoad": [
+      "dispatchpulse"
+    ]
+  },
+  "notes": [
+    "Read CLAUDE.md before any substantive change.",
+    "Never push to GitHub or HF Space yourself — Arun runs pushes manually.",
+    "Never accept tokens in chat — if pasted, warn and refuse.",
+    "Fix only the specific failing check when Phase 2 reports an error."
+  ]
+}
