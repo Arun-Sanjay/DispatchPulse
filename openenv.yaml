@@ -4,3 +4,32 @@ type: space
 runtime: fastapi
 app: server.app:app
 port: 8000
+
+# Graded tasks — each has a deterministic grader returning a score in [0.0, 1.0]
+tasks:
+  - id: easy
+    name: easy
+    difficulty: easy
+    description: >
+      Routine urban shift. Five calls over 30 minutes, four units (ALS, BLS,
+      fire engine, police), one well-equipped hospital. Callers report
+      accurately. Optimal play scores ~0.85+.
+    has_grader: true
+
+  - id: medium
+    name: medium
+    difficulty: medium
+    description: >
+      Urban scenario. 15 calls in 45 minutes, 6 units, 2 hospitals. Mass
+      casualty bus accident at minute 12 and 20% caller inaccuracy.
+      Reasonable play scores ~0.55-0.70.
+    has_grader: true
+
+  - id: hard
+    name: hard
+    difficulty: hard
+    description: >
+      Earthquake response scenario. 30 calls in 60 minutes, 8 units,
+      3 hospitals (one on diversion). 35% caller misreporting due to panic.
+      Strong play scores ~0.40-0.55.
+    has_grader: true
