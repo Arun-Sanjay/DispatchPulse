@@ -1,9 +1,9 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openenv-dispatchpulse"
+name = "dispatchpulse"
 version = "1.0.0"
 description = "DispatchPulse: an OpenEnv environment where an AI agent acts as an emergency dispatch coordinator. Reward uses real clinical survival curves."
 readme = "README.md"
@@ -16,30 +16,37 @@ license = { text = "Apache-2.0" }
 dependencies = [
     "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git@v0.2.3",
     "fastapi>=0.115.0",
-    "fastmcp>=0.2.0",
     "pydantic>=2.0.0",
     "uvicorn>=0.24.0",
     "requests>=2.31.0",
     "numpy>=1.24.0",
     "pyyaml>=6.0",
+    "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]
-baseline = [
-    "openai>=1.0.0",
-]
 dev = [
     "pytest>=8.0.0",
-    "pytest-cov>=4.0.0",
 ]
 
 [project.scripts]
-server = "dispatchpulse.server.app:main"
+server = "server.app:main"
 
 [tool.setuptools]
+packages = ["server"]
+py-modules = [
+    "client",
+    "grader",
+    "inference",
+    "models",
+    "reward",
+    "scenario_loader",
+    "simulation",
+    "task_definitions",
+    "text_view",
+    "utils",
+]
 include-package-data = true
-packages = ["dispatchpulse", "dispatchpulse.server"]
-package-dir = { "dispatchpulse" = ".", "dispatchpulse.server" = "server" }
 
 [tool.setuptools.package-data]
-dispatchpulse = ["tasks/*.yaml"]
+"*" = ["tasks/*.yaml"]
