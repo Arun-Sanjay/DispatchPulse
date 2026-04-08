@@ -1,377 +1,450 @@
-"""DispatchPulse baseline inference script.
+"""DispatchPulse — Round 1 inference script.
 
-ROUND 1 REQUIREMENT: this file must be named ``inference.py`` and live at the
-project root. Reproducible — uses fixed seeds.
+Strictly follows the Meta PyTorch OpenEnv Hackathon submission spec.
 
-Usage
------
-    # Run all 3 tasks with the rule-based heuristic agent (no API key needed)
-    python inference.py --agent heuristic
+MANDATORY env vars (per the official sample):
+    API_BASE_URL    LLM endpoint (default: https://router.huggingface.co/v1)
+    MODEL_NAME      Model identifier (default: Qwen/Qwen2.5-72B-Instruct)
+    HF_TOKEN        API key for the LLM
+    LOCAL_IMAGE_NAME Local docker image name when using from_docker_image()
 
-    # Run all 3 tasks with an OpenAI LLM agent (needs OPENAI_API_KEY)
-    python inference.py --agent llm --model gpt-4o-mini
+Stdout format (exact, three line types):
+    [START] task=<task_name> env=<benchmark> model=<model_name>
+    [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 
-    # Single task
-    python inference.py --agent heuristic --task easy
-
-The script writes ``baseline_results.json`` with per-task scores.
+Connection logic:
+    - If LOCAL_IMAGE_NAME is set: use ``from_docker_image(LOCAL_IMAGE_NAME)``
+    - Else if ENV_BASE_URL is set: connect directly to that running server
+    - Else: spin up an in-process simulation as a fallback (for offline runs)
 """
 
 from __future__ import annotations
 
-import argparse
-import json
+import asyncio
 import os
 import sys
-from typing import Callable, Dict, List, Optional, Tuple
+import textwrap
+from typing import Any, List, Optional
 
-# Make project root importable when running this script directly.
+# ---------------------------------------------------------------------------
+# Make project modules importable when this script is run directly.
+# ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from grader import grade_simulation  # noqa: E402
-from models import Severity, UnitStatus  # noqa: E402
-from reward import get_effectiveness  # noqa: E402
-from scenario_loader import list_tasks, load_scenario  # noqa: E402
-from simulation import DispatchSimulation  # noqa: E402
-from text_view import render_dispatch_center  # noqa: E402
-from utils import calculate_distance  # noqa: E402
+from openai import OpenAI  # noqa: E402  (per spec — must use openai client)
 
-DEFAULT_MAX_STEPS = 250
-DEFAULT_SEED = 42
+from client import DispatchPulseEnv  # noqa: E402
+from models import DispatchPulseAction  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# MANDATORY environment variables (per submission spec)
+# ---------------------------------------------------------------------------
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
+ENV_BASE_URL = os.getenv("ENV_BASE_URL")  # optional override for direct URL
 
-# ============================================================================
-# Heuristic agent — no LLM, no API key
-# ============================================================================
+# Task selection: grader sets DISPATCHPULSE_TASK to one of {easy, medium, hard}
+TASK_NAME = os.getenv("DISPATCHPULSE_TASK", "easy")
+BENCHMARK = "dispatchpulse"
 
+# Episode caps — keep small enough to finish in <20 minutes total
+MAX_STEPS = 60
+TEMPERATURE = 0.0
+MAX_TOKENS = 200
+SUCCESS_SCORE_THRESHOLD = 0.20
 
-def _pick_dispatch(sim: DispatchSimulation) -> Optional[Tuple[str, dict]]:
-    """Pick a single dispatch action, or return None if no dispatch fits.
-
-    Considers all pending calls and all available units, picking the
-    (call, unit) pair that maximises priority * effectiveness / distance.
-    """
-    pending = sim.get_pending_calls()
-    if not pending:
-        return None
-    available_units = sim.get_available_units()
-    if not available_units:
-        return None
-
-    severity_weight = {1: 6.0, 2: 4.0, 3: 2.0, 4: 1.0, 5: 0.5}
-
-    best_pair: Optional[Tuple] = None
-    best_score: float = float("-inf")
-
-    for call in pending:
-        reported_sev = call.reported_severity.value if call.reported_severity else 5
-        sev_w = severity_weight.get(reported_sev, 1.0)
-
-        for unit in available_units:
-            eff = get_effectiveness(unit.unit_type, call.true_type)
-            if eff < 0.30:
-                continue  # totally inappropriate (e.g. ALS to fire at 0.20)
-            dist = calculate_distance(unit.position, call.location)
-            # Reserve ALS for higher-acuity calls — keep them in reserve
-            # for severity 1-2 emergencies that may arrive next.
-            als_penalty = 0.0
-            if (
-                unit.unit_type.value == "als_ambulance"
-                and call.true_severity.value >= 4
-            ):
-                als_penalty = 0.5
-            score = sev_w * eff - als_penalty - 0.05 * dist
-            if score > best_score:
-                best_score = score
-                best_pair = (call, unit)
-
-    if best_pair is None:
-        return None
-    call, unit = best_pair
-
-    # Pick the best matching hospital (only for medical emergencies)
-    chosen_hospital: Optional[str] = None
-    if call.true_type.value in {"cardiac_arrest", "stroke", "trauma"}:
-        for hosp in sim.hospitals.values():
-            if hosp.on_diversion or hosp.available_beds <= 0:
-                continue
-            if call.true_type.value == "cardiac_arrest" and hosp.has_cardiac_unit:
-                chosen_hospital = hosp.hospital_id
-                break
-            if call.true_type.value == "stroke" and hosp.has_stroke_unit:
-                chosen_hospital = hosp.hospital_id
-                break
-            if call.true_type.value == "trauma" and hosp.has_trauma_center:
-                chosen_hospital = hosp.hospital_id
-                break
-
-    kwargs = {"call_id": call.call_id, "unit_id": unit.unit_id}
-    if chosen_hospital:
-        kwargs["hospital_id"] = chosen_hospital
-    return "dispatch", kwargs
+VALID_TASKS = ("easy", "medium", "hard")
 
 
-def heuristic_step(sim: DispatchSimulation) -> Tuple[str, dict]:
-    """Pick the next action: a dispatch if any fits, otherwise wait."""
-    pick = _pick_dispatch(sim)
-    if pick is not None:
-        return pick
-    return "wait", {"minutes": 1}
+# ---------------------------------------------------------------------------
+# Required stdout logging helpers
+# ---------------------------------------------------------------------------
 
 
-def run_heuristic(sim: DispatchSimulation, max_steps: int = DEFAULT_MAX_STEPS) -> None:
-    """Run the heuristic agent against the simulation until episode completes."""
-    steps = 0
-    while not sim.episode_done and steps < max_steps:
-        action, kwargs = heuristic_step(sim)
-        if action == "dispatch":
-            sim.dispatch(**kwargs)
-            sim.advance_time(1)
-        elif action == "wait":
-            sim.advance_time(int(kwargs.get("minutes", 1)))
-        steps += 1
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-# ============================================================================
-# LLM agent — calls OpenAI-compatible API
-# ============================================================================
-
-SYSTEM_PROMPT = """You are an experienced emergency dispatch coordinator running a 911 communications center. You receive incoming emergency calls and must dispatch the right unit at the right time to maximize patient survival outcomes.
-
-DISPATCHER STANDARD OPERATING PROCEDURE:
-1. CRITICAL CALLS FIRST. Severity 1 (cardiac arrest, severe trauma, stroke) is life-threatening — every minute matters. Survival drops ~10% per minute for cardiac arrest.
-2. SEND THE RIGHT UNIT. ALS ambulance for cardiac/stroke/severe trauma. BLS ambulance for stable patients and minor injuries. Fire engine for fires only. Police for mental health crises. Sending a fire engine to a heart attack will not help.
-3. CONSERVE ALS UNITS. Do not send your only ALS ambulance to a sprained ankle — a cardiac arrest may come in 3 minutes later.
-4. CHOOSE THE RIGHT HOSPITAL. For cardiac arrest, pick a hospital with a cardiac unit. For stroke, pick stroke unit. For trauma, pick trauma center. Avoid hospitals on diversion or with zero beds.
-5. CALLBACK WHEN UNCLEAR. If a caller's description is ambiguous or you suspect misreporting, use the callback tool.
-6. WAIT WHEN APPROPRIATE. If all calls are dispatched and no decisions remain, use wait to skip ahead.
-
-Available tools:
-  - view_dispatch_center() - inspect current state (free, no time cost)
-  - dispatch(call_id, unit_id, hospital_id="") - send a unit to a call
-  - classify(call_id, severity) - reclassify a call's severity (1-5)
-  - callback(call_id, question) - phone the caller back for clarification
-  - wait(minutes=1) - skip ahead 1-5 minutes when there's nothing to do
-
-You will be evaluated on patient survival outcomes using real clinical curves.
-Respond with ONE tool call per turn, formatted as:
-  TOOL: <name>
-  ARGS: <key>=<value>; <key>=<value>; ...
-
-Example:
-  TOOL: dispatch
-  ARGS: call_id=CALL-001; unit_id=ALS-1; hospital_id=H1
-"""
-
-
-def parse_llm_action(text: str) -> Tuple[str, dict]:
-    """Parse the LLM's response into (tool_name, kwargs).
-
-    Falls back to ``wait`` on parse failure rather than crashing.
-    """
-    text = text.strip()
-    tool_name = "wait"
-    kwargs: Dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if line.upper().startswith("TOOL:"):
-            tool_name = line.split(":", 1)[1].strip().lower()
-        elif line.upper().startswith("ARGS:"):
-            arg_str = line.split(":", 1)[1].strip()
-            for pair in arg_str.split(";"):
-                pair = pair.strip()
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    kwargs[k.strip()] = v.strip()
-    return tool_name, kwargs
-
-
-def run_llm(
-    sim: DispatchSimulation,
-    model: str = "gpt-4o-mini",
-    max_steps: int = DEFAULT_MAX_STEPS,
-    api_base: Optional[str] = None,
+def log_step(
+    step: int,
+    action: str,
+    reward: float,
+    done: bool,
+    error: Optional[str],
 ) -> None:
-    """Run an OpenAI-compatible LLM agent against the simulation."""
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    action_clean = " ".join(str(action).split())  # collapse whitespace
+    print(
+        f"[STEP] step={step} action={action_clean} reward={reward:.2f} "
+        f"done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(
+    success: bool, steps: int, score: float, rewards: List[float]
+) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# LLM dispatcher prompt
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = textwrap.dedent(
+    """
+    You are an experienced 911 emergency dispatch coordinator.
+    You receive incoming emergency calls and must dispatch the right unit
+    at the right time to maximise patient survival outcomes.
+
+    DISPATCHER STANDARD OPERATING PROCEDURE:
+    1. CRITICAL CALLS FIRST. Severity 1 (cardiac arrest, severe trauma,
+       stroke) is life-threatening. Cardiac arrest survival drops ~10% per
+       minute.
+    2. SEND THE RIGHT UNIT. ALS ambulance for cardiac/stroke/severe trauma.
+       BLS ambulance for stable patients and minor injuries. Fire engine
+       only for fires. Police for mental health crises.
+    3. CONSERVE ALS UNITS. Do not send your only ALS to a sprained ankle.
+    4. PICK THE RIGHT HOSPITAL. Cardiac -> hospital with cardiac unit;
+       stroke -> stroke unit; trauma -> trauma center. Avoid hospitals on
+       diversion or with zero beds.
+    5. CALLBACK WHEN UNCLEAR. If a caller's description seems wrong, use
+       callback to verify the true emergency type.
+    6. WAIT WHEN APPROPRIATE. If no decisions are pending, advance time.
+
+    On each turn you receive a text view of the dispatch center. You must
+    reply with EXACTLY one action, one of:
+
+      dispatch <call_id> <unit_id> [hospital_id]
+      classify <call_id> <severity 1-5>
+      callback <call_id> <free-text question>
+      wait <minutes 1-5>
+
+    Examples:
+      dispatch CALL-001 ALS-1 H1
+      classify CALL-002 1
+      callback CALL-003 Is the patient breathing?
+      wait 2
+
+    Reply with the action only. No explanation, no markdown.
+    """
+).strip()
+
+
+def build_user_prompt(observation_text: str, history: List[str]) -> str:
+    history_block = "\n".join(history[-4:]) if history else "(no prior actions)"
+    return (
+        f"Recent actions you took:\n{history_block}\n\n"
+        f"Current dispatch center:\n{observation_text}\n\n"
+        f"Reply with exactly one action."
+    )
+
+
+def get_model_action_text(
+    client: OpenAI, observation_text: str, history: List[str]
+) -> str:
+    user_prompt = build_user_prompt(observation_text, history)
     try:
-        from openai import OpenAI
-    except ImportError as e:
-        raise RuntimeError(
-            "openai package not installed. Install with: pip install openai"
-        ) from e
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+            stream=False,
+        )
+        text = (completion.choices[0].message.content or "").strip()
+        return text if text else "wait 1"
+    except Exception as exc:
+        print(f"[DEBUG] Model request failed: {exc}", flush=True)
+        return "wait 1"
 
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("HF_TOKEN") or "missing-key"
-    client_kwargs: Dict[str, str] = {"api_key": api_key}
-    if api_base:
-        client_kwargs["base_url"] = api_base
-    client = OpenAI(**client_kwargs)
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    steps = 0
+# ---------------------------------------------------------------------------
+# Action parsing — converts the LLM's free text into a DispatchPulseAction
+# ---------------------------------------------------------------------------
 
-    while not sim.episode_done and steps < max_steps:
-        view = render_dispatch_center(sim, sim.scenario_name)
-        messages.append({"role": "user", "content": view})
 
+def parse_action_text(text: str) -> DispatchPulseAction:
+    """Parse the LLM's plain-text reply into a DispatchPulseAction."""
+    text = (text or "").strip()
+    # Take only the first non-empty line
+    for line in text.splitlines():
+        line = line.strip().strip("`").strip()
+        if line:
+            text = line
+            break
+    parts = text.split(maxsplit=4)
+    if not parts:
+        return DispatchPulseAction(action_type="wait", minutes=1, text="wait 1")
+    head = parts[0].lower()
+
+    if head == "dispatch" and len(parts) >= 3:
+        hospital = parts[3] if len(parts) >= 4 else None
+        return DispatchPulseAction(
+            action_type="dispatch",
+            call_id=parts[1],
+            unit_id=parts[2],
+            hospital_id=hospital,
+            text=text,
+        )
+    if head == "classify" and len(parts) >= 3:
         try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=200,
-                temperature=0.0,
+            sev = int(parts[2])
+        except ValueError:
+            return DispatchPulseAction(action_type="wait", minutes=1, text="wait 1")
+        return DispatchPulseAction(
+            action_type="classify",
+            call_id=parts[1],
+            severity=sev,
+            text=text,
+        )
+    if head == "callback" and len(parts) >= 2:
+        question = " ".join(parts[2:]) if len(parts) > 2 else ""
+        return DispatchPulseAction(
+            action_type="callback",
+            call_id=parts[1],
+            message=question,
+            text=text,
+        )
+    if head == "wait":
+        try:
+            mins = int(parts[1]) if len(parts) > 1 else 1
+        except ValueError:
+            mins = 1
+        mins = max(1, min(mins, 5))
+        return DispatchPulseAction(action_type="wait", minutes=mins, text=f"wait {mins}")
+    if head in ("view", "view_dispatch_center"):
+        return DispatchPulseAction(action_type="view", text="view")
+    return DispatchPulseAction(action_type="wait", minutes=1, text="wait 1")
+
+
+# ---------------------------------------------------------------------------
+# Local in-process fallback (for offline runs without Docker / network)
+# ---------------------------------------------------------------------------
+
+
+class _LocalInProcessEnv:
+    """Minimal in-process env that mimics the OpenEnv client interface.
+
+    Used as a fallback when neither LOCAL_IMAGE_NAME nor ENV_BASE_URL is set.
+    Exposes async ``reset()`` / ``step(action)`` / ``close()`` returning
+    objects shaped like ``StepResult``.
+    """
+
+    def __init__(self, task_name: str, seed: int = 42) -> None:
+        from scenario_loader import load_scenario
+        from simulation import DispatchSimulation
+        from text_view import render_dispatch_center
+
+        self._render = render_dispatch_center
+        self._sim_cls = DispatchSimulation
+        self._scenario = load_scenario(task_name)
+        self._task = task_name
+        self._seed = seed
+        self.sim = None
+
+    async def reset(self, **_kwargs) -> Any:
+        self.sim = self._sim_cls(self._scenario, seed=self._seed)
+        return _SimpleResult(
+            text=self._render(self.sim, self._task), reward=0.0, done=False
+        )
+
+    async def step(self, action: DispatchPulseAction) -> Any:
+        from grader import grade_simulation
+
+        if self.sim is None:
+            raise RuntimeError("Call reset() first.")
+        if self.sim.episode_done:
+            return _SimpleResult(
+                text=self._render(self.sim, self._task),
+                reward=0.0,
+                done=True,
             )
-            action_text = resp.choices[0].message.content or ""
-        except Exception as e:
-            print(f"[warn] LLM call failed: {e}; falling back to wait", file=sys.stderr)
-            action_text = "TOOL: wait\nARGS: minutes=1"
 
-        messages.append({"role": "assistant", "content": action_text})
+        action_type = (action.action_type or "").strip().lower()
+        if action_type == "dispatch":
+            self.sim.dispatch(
+                call_id=action.call_id or "",
+                unit_id=action.unit_id or "",
+                hospital_id=action.hospital_id,
+            )
+            self.sim.advance_time(1)
+        elif action_type == "classify":
+            self.sim.classify(
+                call_id=action.call_id or "",
+                severity=int(action.severity or 3),
+            )
+            self.sim.advance_time(1)
+        elif action_type == "callback":
+            self.sim.callback(
+                call_id=action.call_id or "",
+                question=action.message or "",
+            )
+            self.sim.advance_time(1)
+        elif action_type == "wait":
+            self.sim.advance_time(int(action.minutes or 1))
+        elif action_type == "view":
+            pass
+        else:
+            self.sim.advance_time(1)
 
-        tool, kwargs = parse_llm_action(action_text)
+        done = bool(self.sim.episode_done)
+        reward = float(grade_simulation(self.sim).total) if done else 0.0
+        return _SimpleResult(
+            text=self._render(self.sim, self._task), reward=reward, done=done
+        )
 
+    async def close(self) -> None:
+        return None
+
+
+class _SimpleResult:
+    def __init__(self, text: str, reward: float, done: bool) -> None:
+        self.observation = _SimpleObs(text)
+        self.reward = reward
+        self.done = done
+
+
+class _SimpleObs:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+# ---------------------------------------------------------------------------
+# Main async entry point
+# ---------------------------------------------------------------------------
+
+
+async def run_episode(task_name: str) -> None:
+    """Run one episode against the configured environment.
+
+    Emits exactly one [START] line, one [STEP] line per step, and one [END]
+    line at the end (always, even on exception).
+    """
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "missing-key")
+
+    env: Any
+    if LOCAL_IMAGE_NAME:
         try:
-            if tool == "dispatch" and "call_id" in kwargs and "unit_id" in kwargs:
-                sim.dispatch(
-                    call_id=kwargs["call_id"],
-                    unit_id=kwargs["unit_id"],
-                    hospital_id=kwargs.get("hospital_id", "").strip() or None,
-                )
-                sim.advance_time(1)
-            elif tool == "classify" and "call_id" in kwargs and "severity" in kwargs:
-                sim.classify(kwargs["call_id"], int(kwargs["severity"]))
-                sim.advance_time(1)
-            elif tool == "callback" and "call_id" in kwargs:
-                sim.callback(kwargs["call_id"], kwargs.get("question", ""))
-                sim.advance_time(1)
-            elif tool == "view_dispatch_center":
-                pass  # free action
-            else:
-                minutes = int(kwargs.get("minutes", 1))
-                sim.advance_time(max(1, min(minutes, 5)))
-        except Exception as e:
-            print(f"[warn] Tool call failed: {e}", file=sys.stderr)
-            sim.advance_time(1)
-
-        # Trim conversation to keep it short
-        if len(messages) > 21:
-            messages = messages[:1] + messages[-20:]
-        steps += 1
-
-
-# ============================================================================
-# Driver
-# ============================================================================
-
-
-def run_task(
-    task_name: str,
-    agent: str,
-    seed: int = DEFAULT_SEED,
-    model: str = "gpt-4o-mini",
-    api_base: Optional[str] = None,
-    max_steps: int = DEFAULT_MAX_STEPS,
-) -> Dict[str, float]:
-    """Run a single task end-to-end and return the score breakdown."""
-    scenario = load_scenario(task_name)
-    sim = DispatchSimulation(scenario, seed=seed)
-
-    if agent == "heuristic":
-        run_heuristic(sim, max_steps=max_steps)
-    elif agent == "llm":
-        run_llm(sim, model=model, max_steps=max_steps, api_base=api_base)
+            env = await DispatchPulseEnv.from_docker_image(LOCAL_IMAGE_NAME)
+            print(
+                f"[DEBUG] connected via from_docker_image({LOCAL_IMAGE_NAME!r})",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[DEBUG] from_docker_image failed ({exc}); falling back to in-process",
+                flush=True,
+            )
+            env = _LocalInProcessEnv(task_name=task_name, seed=42)
+    elif ENV_BASE_URL:
+        try:
+            env = DispatchPulseEnv(base_url=ENV_BASE_URL)
+            await env.connect()
+            print(f"[DEBUG] connected to remote env at {ENV_BASE_URL}", flush=True)
+        except Exception as exc:
+            print(
+                f"[DEBUG] remote connect failed ({exc}); falling back to in-process",
+                flush=True,
+            )
+            env = _LocalInProcessEnv(task_name=task_name, seed=42)
     else:
-        raise ValueError(f"Unknown agent: {agent}")
+        env = _LocalInProcessEnv(task_name=task_name, seed=42)
+        print("[DEBUG] using in-process fallback env", flush=True)
 
-    # Make sure the episode finalizes (in case agent stopped early)
-    if not sim.episode_done:
-        sim.advance_time(sim.config.time_limit_minutes)
+    history: List[str] = []
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
 
-    reward = grade_simulation(sim)
-    return {
-        "task": task_name,
-        "agent": agent,
-        "score": reward.total,
-        "survival_score": reward.survival_score,
-        "efficiency_score": reward.efficiency_score,
-        "triage_accuracy": reward.triage_accuracy,
-        "penalty": reward.penalty,
-        "completed_calls": len(sim.completed_calls),
-        "timed_out_calls": len(sim.timed_out_calls),
-        "total_calls": sim.total_calls(),
-        "details": reward.details,
-    }
+    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
+    try:
+        result = await env.reset(task_name=task_name, seed=42)
+        obs_text = getattr(result.observation, "text", "") or ""
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="DispatchPulse baseline runner")
-    parser.add_argument(
-        "--agent",
-        choices=("heuristic", "llm"),
-        default="heuristic",
-        help="Which baseline agent to run.",
-    )
-    parser.add_argument(
-        "--task",
-        choices=list_tasks() + ["all"],
-        default="all",
-        help="Which task to run (default: all).",
-    )
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--model", default="gpt-4o-mini", help="LLM model id (only for --agent llm).")
-    parser.add_argument("--api-base", default=None, help="OpenAI-compatible base URL (optional).")
-    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
-    parser.add_argument("--output", default="baseline_results.json")
-    args = parser.parse_args()
+        for step in range(1, MAX_STEPS + 1):
+            if result.done:
+                break
 
-    tasks_to_run: List[str] = list_tasks() if args.task == "all" else [args.task]
+            action_text = get_model_action_text(client, obs_text, history)
+            action = parse_action_text(action_text)
 
-    print("=" * 64)
-    print(f"DISPATCHPULSE BASELINE  agent={args.agent}  seed={args.seed}")
-    if args.agent == "llm":
-        print(f"  model={args.model}")
-    print("=" * 64)
+            error: Optional[str] = None
+            try:
+                result = await env.step(action)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                rewards.append(0.0)
+                steps_taken = step
+                log_step(
+                    step=step,
+                    action=action.text or action.action_type,
+                    reward=0.0,
+                    done=False,
+                    error=error,
+                )
+                continue
 
-    results: Dict[str, dict] = {}
-    for t in tasks_to_run:
-        print(f"\n[task: {t}] running...")
-        result = run_task(
-            t,
-            agent=args.agent,
-            seed=args.seed,
-            model=args.model,
-            api_base=args.api_base,
-            max_steps=args.max_steps,
+            reward_value = float(result.reward or 0.0)
+            done = bool(result.done)
+            rewards.append(reward_value)
+            steps_taken = step
+            obs_text = getattr(result.observation, "text", "") or obs_text
+            history.append(
+                f"step {step}: {action.text or action.action_type} -> r={reward_value:.2f}"
+            )
+
+            log_step(
+                step=step,
+                action=action.text or action.action_type,
+                reward=reward_value,
+                done=done,
+                error=getattr(result.observation, "last_action_error", None),
+            )
+
+            if done:
+                # The terminal step's reward IS the final episode score [0,1]
+                score = max(0.0, min(1.0, reward_value))
+                break
+
+        if score == 0.0 and rewards:
+            # Fallback: clamp the max observed reward
+            score = max(0.0, min(1.0, max(rewards)))
+
+        success = score >= SUCCESS_SCORE_THRESHOLD
+
+    except Exception as exc:
+        print(f"[DEBUG] Episode crashed: {exc}", flush=True)
+    finally:
+        try:
+            await env.close()
+        except Exception as exc:
+            print(f"[DEBUG] env.close() error: {exc}", flush=True)
+        log_end(
+            success=success, steps=steps_taken, score=score, rewards=rewards
         )
-        results[t] = result
-        print(f"  score: {result['score']:.4f}")
-        print(f"  detail: {result['details']}")
-        print(
-            f"  calls: completed={result['completed_calls']} "
-            f"timed_out={result['timed_out_calls']} total={result['total_calls']}"
-        )
 
-    avg = sum(r["score"] for r in results.values()) / max(1, len(results))
-    print("\n" + "=" * 64)
-    print("SUMMARY")
-    print("=" * 64)
-    for t, r in results.items():
-        print(f"  {t:7s}  score={r['score']:.4f}")
-    print(f"  AVERAGE  {avg:.4f}")
 
-    payload = {
-        "agent": args.agent,
-        "model": args.model if args.agent == "llm" else None,
-        "seed": args.seed,
-        "average_score": avg,
-        "results": results,
-    }
-    with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-    print(f"\nResults saved to {args.output}")
-    return 0
+async def main() -> None:
+    task = TASK_NAME if TASK_NAME in VALID_TASKS else "easy"
+    await run_episode(task)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    asyncio.run(main())
