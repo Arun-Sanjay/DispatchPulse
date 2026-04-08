@@ -34,23 +34,37 @@ The pitch: in India, 24,000+ people die daily from slow emergency response. Aver
 
 ---
 
-## 3. Submission status (as of end of Round 1 day)
+## 3. Submission status (as of 8 April 2026, pre-submission upgrade sprint)
 
-**Round 1:** Submission #3 submitted on 8 April 2026 at 20:02 IST.
-- ✅ **Phase 1: PASSED** (OpenEnv Reset 200, Dockerfile at root, inference.py at root, openenv validate green — `uv.lock` commit fixed this)
-- 🟡 **Phase 2: IN PROGRESS** (30-40 min wait, email notification when done)
-- 5 Phase 2 checks: Docker Build Creation, inference.py Execution, Output Parsing, Task Validation, LLM Criteria Check
+**Round 1: NOT YET SUBMITTED.** Deadline is **11:59 PM IST on April 8, 2026**. Arun is running a final upgrade pass on branch `upgrades/round1-polish` before submitting.
 
-**If Phase 2 passes** — we're done. Wait for Round 2 invites on April 10.
-**If Phase 2 fails** — the email will say which of the 5 checks failed. Fix only the specific failure. Do NOT speculatively refactor.
+- Last stable commit on `main`: `431e294` ("Fix Phase 2 'Not enough tasks with graders'")
+- Backup tag: `backup/pre-upgrade-2026-04-08` pins the pre-upgrade state
+- Backup branch: `backup/round1-baseline` also pins the pre-upgrade state
+- Working branch: `upgrades/round1-polish` is where all upgrades land. Merge to `main` only after local tests pass.
+- HF Space at `431e294` is live and serving (verified: `/health` 200, `/tasks` returns 3 graded tasks).
 
-### Known fixes already applied (do not re-apply)
+**Submission path when ready:**
+1. Merge `upgrades/round1-polish` into `main` locally.
+2. Push `main` to both remotes (Arun runs the pushes, never Claude — see §8).
+3. Wait for HF Space to rebuild and return 200 on `/reset`.
+4. Submit on Scaler dashboard. Phase 1 runs instantly; Phase 2 emails back in 30-40 min.
+5. If Phase 2 fails, fix only the specific named check — do not speculatively refactor.
+
+**Rollback path if upgrade breaks anything:**
+```bash
+git checkout main && git reset --hard backup/round1-baseline
+```
+This restores `main` to the pre-upgrade state in one command.
+
+### Known fixes already in the pre-upgrade baseline
 1. `uv.lock` added to fix "Missing uv.lock" on `openenv validate`
 2. `EXPOSE 8000` + `app_port: 8000` in README frontmatter to route HF Space traffic correctly
 3. `GET /tasks`, `GET /tasks/{task_id}`, `POST /grader` endpoints added to `server/app.py` (fix for "Not enough tasks with graders")
 4. `openenv.yaml` declares all 3 tasks explicitly with `has_grader: true`
 5. MCP-based environment (original design) fully replaced with canonical `Environment` base-class subclass per OpenEnv spec — see commit `64d56f9`
-6. `inference.py` rewritten to match sample exactly: reads `API_BASE_URL` / `MODEL_NAME` / `HF_TOKEN` / `LOCAL_IMAGE_NAME`, uses `from openai import OpenAI`, emits `[START]/[STEP]/[END]` with 2-decimal rewards and 3-decimal score
+6. `inference.py` written to match sample exactly: reads `API_BASE_URL` / `MODEL_NAME` / `HF_TOKEN` / `LOCAL_IMAGE_NAME`, uses `from openai import OpenAI`, emits `[START]/[STEP]/[END]` with 2-decimal rewards and 3-decimal score
+7. Canonical `task_definitions.TASKS` dict exported from `server/environment.py` so static validators can discover the 3 graded tasks
 
 ---
 
@@ -306,9 +320,12 @@ Always remind him to **revoke both tokens immediately after** at:
 
 ## 10. What "done" looks like
 
-- Phase 1 GREEN ✅ (already done)
-- Phase 2 GREEN ✅ (in progress, waiting for email)
-- Email from Scaler confirming Round 1 submission accepted
+- Upgrade branch `upgrades/round1-polish` green on local tests
+- Merged to `main`, pushed to both remotes
+- HF Space rebuilds and `curl /tasks` returns 3 graded tasks
+- Scaler form submitted before 11:59 PM IST April 8, 2026
+- Phase 1 GREEN ✅ (should be instant)
+- Phase 2 GREEN ✅ (30-40 min email)
 - Round 1 results announced April 10, 2026
 - If selected: Round 2 finale April 25-26 in Bangalore (home turf for Arun)
 
